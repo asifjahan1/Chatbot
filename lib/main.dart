@@ -3,17 +3,40 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_screenutil/flutter_screenutil.dart';
 import 'package:ai_kit/ai_kit.dart';
 import 'View/home_page.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
+import 'Providers/gemma_provider.dart';
+import 'Providers/hybrid_provider.dart';
+import 'Providers/qwen_offline_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await dotenv.load(fileName: ".env");
 
-  // Initialize AI Kit with OpenAI
+  // Initialize Flutter Gemma (kept as fallback or if user switches)
+  await FlutterGemma.initialize();
+
+  // Initialize Qwen Offline Provider
+  // Note: the modelPath should point to a valid downloaded .gguf file
+  final qwenOffline = QwenOfflineProvider(modelPath: 'path/to/qwen.gguf');
+  // qwenOffline.initialize() will be called when the model is downloaded.
+
+  // Initialize AI Kit with Hybrid Provider
   AIKit.init(
     providers: [
-      OpenAIProvider(
-        model: 'gpt-4o-mini',
-        apiKey: dotenv.env['OPEN_API_KEY'] ?? '',
+      HybridProvider(
+        onlineProvider: OpenAIProvider(
+          model: 'qwen/qwen-2.5-7b-instruct',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          apiKey: dotenv.env['OPENROUTER_API_KEY'] ?? '',
+        ),
+        offlineProvider: qwenOffline,
+      ),
+      HybridProvider(
+        onlineProvider: GeminiProvider(
+          model: 'gemini-1.5-flash',
+          apiKey: dotenv.env['GEMINI_API_KEY'] ?? '',
+        ),
+        offlineProvider: GemmaProvider(),
       ),
     ],
   );
@@ -34,7 +57,7 @@ class MyApp extends StatelessWidget {
       builder: (_, child) {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
-          title: 'Flutter Demo',
+          title: 'X E R V I S',
           theme: ThemeData(
             colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
           ),

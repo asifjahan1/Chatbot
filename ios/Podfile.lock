@@ -1,0 +1,46 @@
+PODS:
+  - fllama (0.0.1):
+    - Flutter
+  - Flutter (1.0.0)
+  - flutter_gemma (0.16.5):
+    - Flutter
+    - MediaPipeTasksGenAI (= 0.10.33)
+    - MediaPipeTasksGenAIC (= 0.10.33)
+  - flutter_tts (0.0.1):
+    - Flutter
+  - MediaPipeTasksGenAI (0.10.33):
+    - MediaPipeTasksGenAIC (= 0.10.33)
+  - MediaPipeTasksGenAIC (0.10.33)
+
+DEPENDENCIES:
+  - fllama (from `.symlinks/plugins/fllama/ios`)
+  - Flutter (from `Flutter`)
+  - flutter_gemma (from `.symlinks/plugins/flutter_gemma/ios`)
+  - flutter_tts (from `.symlinks/plugins/flutter_tts/ios`)
+
+SPEC REPOS:
+  trunk:
+    - MediaPipeTasksGenAI
+    - MediaPipeTasksGenAIC
+
+EXTERNAL SOURCES:
+  fllama:
+    :path: ".symlinks/plugins/fllama/ios"
+  Flutter:
+    :path: Flutter
+  flutter_gemma:
+    :path: ".symlinks/plugins/flutter_gemma/ios"
+  flutter_tts:
+    :path: ".symlinks/plugins/flutter_tts/ios"
+
+SPEC CHECKSUMS:
+  fllama: d710313cf141f66abe5dc36806263537427ce878
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  flutter_gemma: 6bf34a12b45df17e3db9b33db7fea51506c8628f
+  flutter_tts: 91ad1884033cd95ef6e9338754adad54f01f090f
+  MediaPipeTasksGenAI: 8eed8e6d03fe26d30c4205cb5295ec7b394432ad
+  MediaPipeTasksGenAIC: cb098ecea44e248efe8fe7e2f62b4cb0df781802
+
+PODFILE CHECKSUM: 66433610398bff21a737a64d9fbd19fc97859bcf
+
+COCOAPODS: 1.16.2
