@@ -16,8 +16,8 @@ Future<void> main() async {
   await FlutterGemma.initialize();
 
   // Initialize Qwen Offline Provider
-  // Note: the modelPath should point to a valid downloaded .gguf file
-  final qwenOffline = QwenOfflineProvider(modelPath: 'path/to/qwen.gguf');
+  // Note: the modelPath will be set dynamically once the model is downloaded.
+  final qwenOffline = QwenOfflineProvider();
   // qwenOffline.initialize() will be called when the model is downloaded.
 
   // Initialize AI Kit with Hybrid Provider

@@ -4,6 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   flutter_gemma
+  vosk_flutter
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
