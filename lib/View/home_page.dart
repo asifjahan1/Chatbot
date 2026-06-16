@@ -1,9 +1,17 @@
+import 'dart:math';
+import 'dart:io';
+import 'package:dio/dio.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:ai_kit/ai_kit.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
+// import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:vosk_flutter/vosk_flutter.dart';
+import '../Providers/qwen_offline_provider.dart';
+import '../Providers/hybrid_provider.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -14,38 +22,321 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   bool _isModelInstalled = false;
-  final bool _isDownloading = false;
-  final double _downloadProgress = 0.0;
+  bool _isDownloading = false;
+  double _downloadProgress = 0.0;
+
+  int _downloadedBytes = 0;
+  int _totalBytes = 0;
+  String _eta = '';
+  int _lastBytes = 0;
+  DateTime? _lastTime;
 
   final stt.SpeechToText _speechToText = stt.SpeechToText();
   final FlutterTts _flutterTts = FlutterTts();
   bool _isListening = false;
+  bool _isJarvisMode = true;
+
+  VoskFlutterPlugin? _vosk;
+  Model? _voskModel;
+  Recognizer? _voskRecognizer;
+  SpeechService? _speechService;
+  bool _isWakeWordInitialized = false;
+  bool _isProcessingCommand = false;
+  TextEditingController? _chatController;
+  void Function()? _onSendCallback;
+
+  String _formatBytes(int bytes) {
+    if (bytes <= 0) return '0 B';
+    const suffixes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = (log(bytes) / log(1024)).floor();
+    return '${(bytes / pow(1024, i)).toStringAsFixed(1)} ${suffixes[i]}';
+  }
 
   @override
   void initState() {
     super.initState();
-    _isModelInstalled = true; // Qwen hybrid uses API fallback immediately
+    _checkModel();
     _initSpeechAndTts();
+
+    // Initialize Vosk for Wake Word
+    _initVosk();
+  }
+
+  Future<void> _initVosk() async {
+    try {
+      var status = await Permission.microphone.request();
+      if (status != PermissionStatus.granted) {
+        debugPrint("Microphone permission denied.");
+        return;
+      }
+
+      _vosk = VoskFlutterPlugin.instance();
+      final modelLoader = ModelLoader();
+      final enSmallModelPath = await modelLoader.loadFromAssets(
+        'assets/models/vosk-model-small-en-us-0.15.zip',
+      );
+
+      _voskModel = await _vosk!.createModel(enSmallModelPath);
+      _voskRecognizer = await _vosk!.createRecognizer(
+        model: _voskModel!,
+        sampleRate: 16000,
+      );
+
+      _speechService = await _vosk!.initSpeechService(_voskRecognizer!);
+
+      _speechService!.onPartial().listen((e) {
+        if (_isProcessingCommand) return;
+        final text = e.toString().toLowerCase();
+        if (text.contains("jarvis")) {
+          _isProcessingCommand = true;
+          _voskCallback();
+        }
+      });
+
+      _speechService!.onResult().listen((e) {
+        if (_isProcessingCommand) return;
+        final text = e.toString().toLowerCase();
+        if (text.contains("jarvis")) {
+          _isProcessingCommand = true;
+          _voskCallback();
+        }
+      });
+
+      _isWakeWordInitialized = true;
+
+      if (_isJarvisMode) {
+        await _speechService!.start();
+      }
+    } catch (err) {
+      debugPrint("Vosk error: $err");
+    }
+  }
+
+  void _voskCallback() async {
+    // Jarvis detected!
+    try {
+      await _speechService
+          ?.stop(); // Pause wake word detection while processing
+    } catch (e) {
+      debugPrint("Error stopping Vosk: $e");
+    }
+
+    await _flutterTts.speak("Yes sir?");
+
+    // Start listening for the actual command using standard SpeechToText
+    bool available = await _speechToText.initialize(
+      onStatus: (status) {
+        // If STT stops listening (e.g. timeout or done), resume vosk
+        if (status == 'done' || status == 'notListening') {
+          if (_isJarvisMode) {
+            // Add a small delay to avoid conflicts
+            Future.delayed(const Duration(seconds: 2), () {
+              _isProcessingCommand = false;
+              _speechService?.start();
+            });
+          } else {
+            _isProcessingCommand = false;
+          }
+        }
+      },
+    );
+
+    if (available) {
+      _speechToText.listen(
+        onResult: (val) {
+          if (val.finalResult) {
+            _speechToText.stop();
+            if (_chatController != null &&
+                _onSendCallback != null &&
+                val.recognizedWords.isNotEmpty) {
+              _chatController!.text = val.recognizedWords;
+              _onSendCallback!();
+            }
+          }
+        },
+        listenOptions: stt.SpeechListenOptions(
+          listenFor: const Duration(seconds: 10),
+          cancelOnError: true,
+          partialResults: false,
+        ),
+      );
+    } else {
+      // If STT fails to initialize, resume Vosk
+      _isProcessingCommand = false;
+      if (_isJarvisMode) _speechService?.start();
+    }
+  }
+
+  @override
+  void dispose() {
+    _speechService?.cancel();
+    _speechService?.dispose();
+    _voskRecognizer?.dispose();
+    _voskModel?.dispose();
+    super.dispose();
   }
 
   void _initSpeechAndTts() async {
-    await _speechToText.initialize();
+    // _speechToText.initialize() is called when needed to prevent mic conflict with Vosk
     await _flutterTts.setLanguage("en-US");
     // To support Bengali, you can switch language via _flutterTts.setLanguage("bn-BD");
   }
 
+  void _initializeQwenProvider(String path) {
+    try {
+      for (var name in AIKit.instance.providerNames) {
+        final provider = AIKit.instance.getProvider(name);
+        if (provider is HybridProvider &&
+            provider.offlineProvider is QwenOfflineProvider) {
+          final qwen = provider.offlineProvider as QwenOfflineProvider;
+          qwen.modelPath = path;
+          qwen.initialize();
+        }
+      }
+    } catch (e) {
+      print('Error initializing Qwen: $e');
+    }
+  }
+
   Future<void> _checkModel() async {
-    setState(() {
-      _isModelInstalled = true;
-    });
+    final dir = await getApplicationDocumentsDirectory();
+    final modelFile = File('${dir.path}/qwen2.5-3b.gguf');
+    if (await modelFile.exists()) {
+      _initializeQwenProvider(modelFile.path);
+      setState(() {
+        _isModelInstalled = true;
+      });
+    }
   }
 
   Future<void> _downloadModel() async {
-    // Model download for Qwen 4B is over 2.5GB and should be done via manual GGUF file insertion.
-    // Online API fallback guarantees chat functionality.
     setState(() {
-      _isModelInstalled = true;
+      _isDownloading = true;
+      _downloadProgress = 0.0;
     });
+
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final modelPath = '${dir.path}/qwen2.5-3b.gguf';
+      final dio = Dio();
+
+      const url =
+          'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf';
+
+      _lastBytes = 0;
+      _lastTime = DateTime.now();
+      _eta = 'Calculating...';
+
+      await dio.download(
+        url,
+        modelPath,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            final now = DateTime.now();
+            final duration = now.difference(_lastTime ?? now).inMilliseconds;
+
+            // Update ETA roughly every 1 second
+            if (duration >= 1000) {
+              final bytesSinceLast = received - _lastBytes;
+              final speedBps = bytesSinceLast / (duration / 1000);
+              final bytesRemaining = total - received;
+
+              if (speedBps > 0) {
+                final secondsRemaining = (bytesRemaining / speedBps).round();
+                if (secondsRemaining > 60) {
+                  _eta =
+                      '${secondsRemaining ~/ 60}m ${secondsRemaining % 60}s remaining';
+                } else {
+                  _eta = '${secondsRemaining}s remaining';
+                }
+              }
+
+              _lastBytes = received;
+              _lastTime = now;
+            }
+
+            setState(() {
+              _downloadedBytes = received;
+              _totalBytes = total;
+              _downloadProgress = received / total;
+            });
+          }
+        },
+      );
+
+      _initializeQwenProvider(modelPath);
+
+      setState(() {
+        _isDownloading = false;
+        _isModelInstalled = true;
+      });
+    } catch (e) {
+      setState(() {
+        _isDownloading = false;
+      });
+      debugPrint('Download failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Download failed. Please check internet connection.'),
+          ),
+        );
+      }
+    }
+  }
+
+  void _toggleJarvisMode() async {
+    setState(() {
+      _isJarvisMode = !_isJarvisMode;
+    });
+
+    if (_isJarvisMode) {
+      if (_isWakeWordInitialized) {
+        try {
+          _isProcessingCommand = false;
+          await _speechService?.start();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Jarvis Mode Activated. Say "Jarvis" to wake.'),
+              ),
+            );
+          }
+        } catch (e) {
+          debugPrint("Error starting Vosk: $e");
+        }
+      } else {
+        // Try initializing again if key was just added
+        await _initVosk();
+        if (!_isWakeWordInitialized && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Please add your Picovoice AccessKey to .env file to use Jarvis Mode.',
+              ),
+            ),
+          );
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Jarvis Mode Activated. Say "Jarvis" to wake.'),
+            ),
+          );
+        }
+      }
+    } else {
+      try {
+        await _speechService?.stop();
+        _speechToText.stop();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Jarvis Mode Deactivated.')),
+          );
+        }
+      } catch (e) {
+        debugPrint("Error stopping Porcupine: $e");
+      }
+    }
   }
 
   void _listen(TextEditingController controller) async {
@@ -80,6 +371,16 @@ class _HomePageState extends State<HomePage> {
             fontSize: 20,
           ),
         ),
+        actions: [
+          IconButton(
+            icon: Icon(
+              _isJarvisMode ? Icons.smart_toy : Icons.smart_toy_outlined,
+              color: _isJarvisMode ? Colors.blue : Colors.black,
+            ),
+            tooltip: 'Jarvis Mode',
+            onPressed: _toggleJarvisMode,
+          ),
+        ],
       ),
       body: _isModelInstalled
           ? AIChatView(
@@ -112,6 +413,8 @@ class _HomePageState extends State<HomePage> {
                 errorColor: Colors.greenAccent,
               ),
               inputBuilder: (context, controller, onSend) {
+                _chatController = controller;
+                _onSendCallback = onSend;
                 return Padding(
                   padding: const EdgeInsets.only(
                     left: 16.0,
@@ -155,7 +458,9 @@ class _HomePageState extends State<HomePage> {
                       const SizedBox(width: 8),
                       Container(
                         decoration: BoxDecoration(
-                          color: _isListening ? Colors.redAccent : const Color(0xFF2D2D2D),
+                          color: _isListening
+                              ? Colors.redAccent
+                              : const Color(0xFF2D2D2D),
                           shape: BoxShape.circle,
                           boxShadow: const [
                             BoxShadow(
@@ -190,7 +495,7 @@ class _HomePageState extends State<HomePage> {
                           icon: const Icon(
                             Icons.rocket_launch,
                             color: Colors.white,
-                          ), // Change this icon to whatever you like!
+                          ),
                           onPressed: onSend,
                         ),
                       ),
@@ -220,7 +525,7 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'To ensure 100% offline capability, we need to download the AI model (approx 280MB) once.',
+                      'To ensure 100% offline capability, we need to download the AI model once.',
                       textAlign: TextAlign.center,
                       style: GoogleFonts.poppins(color: Colors.black54),
                     ),
@@ -228,25 +533,62 @@ class _HomePageState extends State<HomePage> {
                     if (_isDownloading)
                       Column(
                         children: [
-                          LinearProgressIndicator(value: _downloadProgress),
+                          if (_eta.isNotEmpty)
+                            Text(
+                              _eta,
+                              style: GoogleFonts.poppins(
+                                color: Colors.blueGrey,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          const SizedBox(height: 8),
+                          LinearProgressIndicator(
+                            value: _downloadProgress,
+                            color: Colors.green,
+                          ),
                           const SizedBox(height: 8),
                           Text(
-                            '${(_downloadProgress * 100).toStringAsFixed(1)}%', style: TextStyle(color: Colors.green),
+                            '${(_downloadProgress * 100).toStringAsFixed(1)}%',
+                            style: const TextStyle(
+                              color: Colors.green,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '(${_formatBytes(_downloadedBytes)} / ${_formatBytes(_totalBytes)})',
+                            style: GoogleFonts.poppins(
+                              color: Colors.black54,
+                              fontSize: 12,
+                            ),
                           ),
                         ],
                       )
                     else
-                      ElevatedButton(
-                        onPressed: _downloadModel,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.deepPurple,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 32,
-                            vertical: 12,
+                      Container(
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            colors: [Colors.deepPurple, Colors.purpleAccent],
                           ),
+                          borderRadius: BorderRadius.circular(25),
                         ),
-                        child: const Text('Download Now'),
+                        child: ElevatedButton(
+                          onPressed: _downloadModel,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            shadowColor: Colors.transparent,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(25),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 12,
+                            ),
+                          ),
+                          child: const Text('Download Now'),
+                        ),
                       ),
                   ],
                 ),

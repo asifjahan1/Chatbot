@@ -3,11 +3,11 @@ import 'package:ai_kit/ai_kit.dart';
 import 'package:fllama/fllama.dart';
 
 class QwenOfflineProvider implements AIProvider {
-  final String modelPath;
+  String? modelPath;
   bool _isReady = false;
   double? _contextId;
 
-  QwenOfflineProvider({required this.modelPath});
+  QwenOfflineProvider({this.modelPath});
 
   @override
   String get name => 'QwenOffline';
@@ -23,9 +23,14 @@ class QwenOfflineProvider implements AIProvider {
 
   /// Call this to initialize the model in memory.
   Future<void> initialize() async {
+    if (modelPath == null) {
+      _isReady = false;
+      print('modelPath is not set for QwenOfflineProvider');
+      return;
+    }
     try {
       final res = await Fllama.instance()?.initContext(
-        modelPath,
+        modelPath!,
         nCtx: 2048, // Reduced context window to save RAM
         nThreads: 2,
       );

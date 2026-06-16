@@ -11,3 +11,7 @@
 # javax.lang.model (referenced by errorprone annotations)
 -dontwarn javax.lang.model.**
 -keep class javax.lang.model.** { *; }
+
+-keep class com.sun.jna.* { *; }
+-keepclassmembers class * extends com.sun.jna.* { public *; }
+-dontwarn java.awt.**
